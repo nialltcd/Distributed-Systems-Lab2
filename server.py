@@ -1,36 +1,67 @@
 #!/usr/bin/python
 
-import SocketServer
+import socket
+import sys
+from threading import *
 from Queue import Queue
-from threading import Thread
+import re
+import os
 
-class MyTCPHandler(SocketServer.BaseRequestHandler):
-    """
-    The RequestHandler class for our server.
+global port
+global host
 
-    It is instantiated once per connection to the server, and must
-    override the handle() method to implement communication to the
-    client.
-    """
+class Worker(Thread):
+    """Thread executing tasks from a given tasks queue"""
+    def __init__(self, tasks):
+        Thread.__init__(self)
+        self.tasks = tasks
+        self.daemon = True
+        self.start()
 
-    def handle(self):
-	print 'New Connection'
-        # self.request is the TCP socket connected to the client
-        self.data = self.request.recv(1024).strip()
-	if 'KILL_SERVICE' in self.data:
-		print 'KILL'
-        print "{} wrote:".format(self.client_address[0])
-        print self.data
-        # just send back the same data, but upper-cased
-        self.request.sendall(self.data.upper())
+    def run(self):
+        while True:
+            client_connection = self.tasks.get()
+            try: self.process_message(client_connection)
+            except Exception, e: print e
+            self.tasks.task_done()
+	
+    def process_message(self,client_connection):
+	data=client_connection.recv(1024)#[2:-2]
+	print data
+	global port,host
+	if re.match('^HELO\s.*', data):
+		text = data[5:]
+		client_connection.send('HELO '+text+'\nIP:['+host+']\nPort:['+str(port)+']\nStudentID:[b7b3def745dde423b09fdbbd94f1f46405c629639a4c0480b04070d46c1774e6]\n')
+	elif re.match('^KILL_SERVICE$',data):
+	        client_connection.send('Killing Service!\nIP:['+host+']\nPort:['+str(port)+']\nStudentID:[b7b3def745dde423b09fdbbd94f1f46405c629639a4c0480b04070d46c1774e6]\n')
+		os._exit(0)
+	else:
+		client_connection.send('Incorrect string format received: '+data+'\nIP:[ip address]\nPort:[port number]\nStudentID:[b7b3def745dde423b09fdbbd94f1f46405c629639a4c0480b04070d46c1774e6]\n')
 
-if __name__ == "__main__":
-    HOST, PORT = "localhost", 8000
 
-    # Create the server, binding to localhost on port 9999
-    server = SocketServer.TCPServer((HOST, PORT), MyTCPHandler)
-    print 'Server Created'
+class ThreadPool:
+    """Pool of threads consuming tasks from a queue"""
+    def __init__(self, num_threads):
+        self.tasks = Queue(num_threads)
+        for _ in range(num_threads): Worker(self.tasks)
 
-    # Activate the server; this will keep running until you
-    # interrupt the program with Ctrl-C
-    server.serve_forever()
+    def add_task(self,client_connection ):
+        """Add a task to the queue"""
+        self.tasks.put(client_connection)
+
+    def wait_completion(self):
+        """Wait for completion of all the tasks in the queue"""
+        self.tasks.join()
+
+
+serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+global host
+host="127.0.0.1"
+global port
+port = int(sys.argv[1])
+serversocket.bind((host, port))
+pool = ThreadPool(5)
+serversocket.listen(10)
+while 1:
+    clientsocket, address = serversocket.accept()
+    pool.add_task(clientsocket)
